@@ -11,8 +11,9 @@ import (
 
 // FourDigitSevenSegment allows control of a 4 digit, 7 segment display.
 type FourDigitSevenSegment struct {
-	digitPins   [4]rpio.Pin
-	segmentPins [8]rpio.Pin
+	digitPins    [4]rpio.Pin
+	segmentPins  [8]rpio.Pin
+	segmentsDown [8]bool
 	// String to display.
 	s string
 }
@@ -24,9 +25,22 @@ func NewFourDigitSevenSegmentDisplay(pD1, pa, pf, pD2, pD3, pb, pe, pd, pdp, pc,
 	pD2.Output()
 	pD3.Output()
 	pD4.Output()
+	pD1.Low()
+	pD2.Low()
+	pD3.Low()
+	pD4.Low()
+	pa.PullUp()
+	pf.PullUp()
+	pb.PullUp()
+	pe.PullUp()
+	pd.PullUp()
+	pdp.PullUp()
+	pc.PullUp()
+	pg.PullUp()
 	d := &FourDigitSevenSegment{
-		digitPins:   [4]rpio.Pin{pD1, pD2, pD3, pD4},
-		segmentPins: [8]rpio.Pin{pa, pb, pc, pd, pe, pf, pg, pdp},
+		digitPins:    [4]rpio.Pin{pD1, pD2, pD3, pD4},
+		segmentPins:  [8]rpio.Pin{pa, pb, pc, pd, pe, pf, pg, pdp},
+		segmentsDown: [8]bool{false, false, false, false, false, false, false, false},
 	}
 	return d
 }
@@ -34,7 +48,9 @@ func NewFourDigitSevenSegmentDisplay(pD1, pa, pf, pD2, pD3, pb, pe, pd, pdp, pc,
 // ErrStringTooLong is returned when more than 4 characters are attempted to be displayed.
 var ErrStringTooLong = errors.New("cannot display string because it is too long")
 
-// Start the display.
+// Start the display. This sets a goroutine running which continuously updates the screen.
+// If this function used, then no calls to "Render" are required.
+// Alternatively, call Render in a very tight loop to not require a goroutine.
 func (d *FourDigitSevenSegment) Start(ctx context.Context, s string) (cancel func()) {
 	d.Update(s)
 	ctx, cancel = context.WithCancel(ctx)
@@ -44,7 +60,7 @@ func (d *FourDigitSevenSegment) Start(ctx context.Context, s string) (cancel fun
 			case <-ctx.Done():
 				return
 			default:
-				d.render()
+				d.Render()
 			}
 		}
 	}()
@@ -58,7 +74,7 @@ func (d *FourDigitSevenSegment) Update(s string) {
 
 // Render the string (at most 4 digits). Needs to be called at least once per 10ms to
 // show up.
-func (d *FourDigitSevenSegment) render() {
+func (d *FourDigitSevenSegment) Render() {
 	if len(d.s) < 5 {
 		d.renderSegments((d.s + "    ")[:4])
 		return
@@ -80,32 +96,36 @@ func (d *FourDigitSevenSegment) renderSegments(s string) {
 }
 
 func (d *FourDigitSevenSegment) light(index int, values [8]bool) {
-	// Switch off the light while we change things.
-	d.digitPins[0].Low()
-	d.digitPins[1].Low()
-	d.digitPins[2].Low()
-	d.digitPins[3].Low()
+	// Turn off the previous pin.
+	prev := index - 1
+	if prev < 0 {
+		prev = 3
+	}
+	d.digitPins[prev].Low()
 
 	// Set the correct segments.
-	var allDown bool
+	var anythingToDisplay bool
 	for i, v := range values {
-		m := rpio.PullDown
-		if !v {
-			m = rpio.PullUp
-			allDown = false
+		if v {
+			anythingToDisplay = true
+			if !d.segmentsDown[i] {
+				d.segmentPins[i].PullDown()
+			}
+		} else {
+			if d.segmentsDown[i] {
+				d.segmentPins[i].PullUp()
+			}
 		}
-		d.segmentPins[i].Pull(m)
-	}
-	if allDown {
-		// Don't waste time if there's nothing to display.
-		return
+		d.segmentsDown[i] = v
 	}
 
 	// Light up the digit.
-	d.digitPins[index].High()
+	if anythingToDisplay {
+		d.digitPins[index].High()
+	}
 
 	// Give it time to shine.
-	time.Sleep(time.Millisecond)
+	time.Sleep(time.Millisecond * 1)
 }
 
 var characterToSegments = map[rune][8]bool{
